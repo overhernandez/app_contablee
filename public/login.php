@@ -49,7 +49,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         <form method="POST" action="login.php">
             <div>
                 <label>Usuario:</label>
-                <input type="text" name="username" required>
+                <input type="text" name="username" value="<?php echo htmlspecialchars($username ?? ''); ?>" required>
             </div>
             <div>
                 <label>Contraseña:</label>

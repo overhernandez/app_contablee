@@ -16,9 +16,14 @@ if ($_SESSION['role'] != 'admin') {
 $db = new Database();
 $conn = $db->connect();
 
-// Obtener parámetros de fecha
+// Obtener lista de clientes para el selector
+$clientes = $conn->query("SELECT id_cliente, nombre FROM clientes ORDER BY nombre")->fetchAll(PDO::FETCH_ASSOC);
+
+// Obtener parámetros
 $fecha = $_GET['fecha'] ?? date('Y-m-d');
 $tipo_reporte = $_GET['tipo'] ?? 'diario';
+$informe_tipo = $_GET['informe_tipo'] ?? 'general'; // nuevo parámetro para tipo de informe
+$cliente_seleccionado = $_GET['cliente'] ?? null; // cliente seleccionado para informe personal
 
 // Calcular rangos de fecha según tipo de reporte
 if ($tipo_reporte == 'mensual') {
@@ -28,31 +33,90 @@ if ($tipo_reporte == 'mensual') {
     $fecha_inicio = $fecha_fin = $fecha;
 }
 
-// Obtener total ingresos
-$stmt = $conn->prepare("SELECT SUM(monto) as total FROM ingresos WHERE fecha_ingreso BETWEEN ? AND ?");
-$stmt->execute([$fecha_inicio, $fecha_fin]);
-$total_ingresos = $stmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0;
+$mensaje_error_filtro = '';
+// Construir consulta con filtro por cliente si es posible
+if ($informe_tipo === 'personal' && $cliente_seleccionado) {
+    // Verificar si las tablas ingresos y egresos tienen columna id_cliente para filtrar
+    $columnas_ingresos = $conn->query("SHOW COLUMNS FROM ingresos LIKE 'id_cliente'")->fetch();
+    $columnas_egresos = $conn->query("SHOW COLUMNS FROM egresos LIKE 'id_cliente'")->fetch();
 
-// Obtener total egresos
-$stmt = $conn->prepare("SELECT SUM(monto) as total FROM egresos WHERE fecha_egreso BETWEEN ? AND ?");
-$stmt->execute([$fecha_inicio, $fecha_fin]);
-$total_egresos = $stmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0;
+    if ($columnas_ingresos && $columnas_egresos) {
+        // Filtrar por cliente
+        $query = "
+            SELECT 
+                i.fecha_ingreso AS fecha,
+                i.monto AS total_ingresos,
+                0 AS total_egresos
+            FROM ingresos i
+            WHERE DATE(i.fecha_ingreso) = ? AND i.id_cliente = ?
 
-// Calcular balance
-$balance = $total_ingresos - $total_egresos;
+            UNION ALL
 
-// Obtener listado de transacciones
-$transacciones = [];
-$stmt = $conn->prepare("
-    (SELECT 'ingreso' as tipo, id_ingreso as id, descripcion, monto, fecha_ingreso as fecha 
-     FROM ingresos WHERE fecha_ingreso BETWEEN ? AND ?)
-    UNION ALL
-    (SELECT 'egreso' as tipo, id_egreso as id, descripcion, monto, fecha_egreso as fecha 
-     FROM egresos WHERE fecha_egreso BETWEEN ? AND ?)
-    ORDER BY fecha DESC
-");
-$stmt->execute([$fecha_inicio, $fecha_fin, $fecha_inicio, $fecha_fin]);
-$transacciones = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            SELECT 
+                e.fecha_egreso AS fecha,
+                0 AS total_ingresos,
+                e.monto AS total_egresos
+            FROM egresos e
+            WHERE DATE(e.fecha_egreso) = ? AND e.id_cliente = ?
+        ";
+        $params = [$fecha, $cliente_seleccionado, $fecha, $cliente_seleccionado];
+    } else {
+        // No se puede filtrar por cliente, mostrar mensaje
+        $mensaje_error_filtro = "No es posible filtrar por persona debido a la estructura actual de la base de datos.";
+        // Consulta sin filtro
+        $query = "
+            SELECT 
+                i.fecha_ingreso AS fecha,
+                i.monto AS total_ingresos,
+                0 AS total_egresos
+            FROM ingresos i
+            WHERE DATE(i.fecha_ingreso) = ?
+
+            UNION ALL
+
+            SELECT 
+                e.fecha_egreso AS fecha,
+                0 AS total_ingresos,
+                e.monto AS total_egresos
+            FROM egresos e
+            WHERE DATE(e.fecha_egreso) = ?
+        ";
+        $params = [$fecha, $fecha];
+    }
+} else {
+    // Informe general sin filtro
+    $query = "
+        SELECT 
+            i.fecha_ingreso AS fecha,
+            i.monto AS total_ingresos,
+            0 AS total_egresos
+        FROM ingresos i
+        WHERE DATE(i.fecha_ingreso) = ?
+
+        UNION ALL
+
+        SELECT 
+            e.fecha_egreso AS fecha,
+            0 AS total_ingresos,
+            e.monto AS total_egresos
+        FROM egresos e
+        WHERE DATE(e.fecha_egreso) = ?
+    ";
+    $params = [$fecha, $fecha];
+}
+
+$stmt = $conn->prepare($query);
+$stmt->execute($params);
+$resumen = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Calcular totales
+$total_ingresos = 0;
+$total_egresos = 0;
+foreach ($resumen as $row) {
+    $total_ingresos += $row['total_ingresos'];
+    $total_egresos += $row['total_egresos'];
+}
+$diferencia = $total_ingresos - $total_egresos;
 ?>
 
 <!DOCTYPE html>
@@ -65,7 +129,22 @@ $transacciones = $stmt->fetchAll(PDO::FETCH_ASSOC);
         .resumen { background: #f8f9fa; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
         .positivo { color: green; }
         .negativo { color: red; }
+        .error { color: red; font-weight: bold; margin-bottom: 15px; }
     </style>
+    <script>
+        function toggleClienteSelector() {
+            var informeTipo = document.getElementById('informe_tipo').value;
+            var clienteSelector = document.getElementById('cliente_selector');
+            if (informeTipo === 'personal') {
+                clienteSelector.style.display = 'block';
+            } else {
+                clienteSelector.style.display = 'none';
+            }
+        }
+        window.onload = function() {
+            toggleClienteSelector();
+        };
+    </script>
 </head>
 <body>
     <div class="container">
@@ -73,8 +152,30 @@ $transacciones = $stmt->fetchAll(PDO::FETCH_ASSOC);
             <a href="index.php" style="text-decoration: none; color: #333; font-weight: bold; font-size: 16px;">← Volver al Sistema Contable</a>
         </div>
         <h1>Informes Contables</h1>
+
+        <?php if ($mensaje_error_filtro): ?>
+            <div class="error"><?= htmlspecialchars($mensaje_error_filtro) ?></div>
+        <?php endif; ?>
         
         <form method="GET" action="">
+            <div class="form-group">
+                <label>Tipo de Informe:</label>
+                <select name="informe_tipo" id="informe_tipo" onchange="this.form.submit(); toggleClienteSelector();">
+                    <option value="general" <?= $informe_tipo == 'general' ? 'selected' : '' ?>>Informe General</option>
+                    <option value="personal" <?= $informe_tipo == 'personal' ? 'selected' : '' ?>>Informe Personal</option>
+                </select>
+            </div>
+            <div class="form-group" id="cliente_selector" style="display:none;">
+                <label>Seleccionar Persona:</label>
+                <select name="cliente" onchange="this.form.submit()">
+                    <option value="">-- Seleccione --</option>
+                    <?php foreach ($clientes as $cliente): ?>
+                        <option value="<?= $cliente['id_cliente'] ?>" <?= $cliente_seleccionado == $cliente['id_cliente'] ? 'selected' : '' ?>>
+                            <?= htmlspecialchars($cliente['nombre']) ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
             <div class="form-group">
                 <label>Tipo de Reporte:</label>
                 <select name="tipo" onchange="this.form.submit()">
@@ -90,43 +191,51 @@ $transacciones = $stmt->fetchAll(PDO::FETCH_ASSOC);
             </div>
         </form>
 
-        <div class="resumen">
-            <h2>Resumen <?= $tipo_reporte == 'diario' ? 'del día' : 'mensual' ?></h2>
-            <p><strong>Total Ingresos:</strong> <?= number_format($total_ingresos, 2) ?></p>
-            <p><strong>Total Egresos:</strong> <?= number_format($total_egresos, 2) ?></p>
-            <p><strong>Balance:</strong> 
-                <span class="<?= $balance >= 0 ? 'positivo' : 'negativo' ?>">
-                    <?= number_format($balance, 2) ?>
-                </span>
-            </p>
-        </div>
-
-        <h2>Detalle de Transacciones</h2>
+        <h2>Resumen del <?= $tipo_reporte == 'mensual' ? 'mes' : 'día' ?> <?= date($tipo_reporte == 'mensual' ? 'm/Y' : 'd/m/Y', strtotime($fecha)) ?></h2>
+        
         <table>
             <thead>
                 <tr>
-                    <th>Tipo</th>
-                    <th>Descripción</th>
-                    <th>Monto</th>
                     <th>Fecha</th>
+                    <th>Total Ingresos</th>
+                    <th>Total Egresos</th>
                 </tr>
             </thead>
             <tbody>
-                <?php foreach ($transacciones as $trans): ?>
+                <?php 
+                foreach ($resumen as $row) {
+                    $fecha_formateada = date('d/m/Y', strtotime($row['fecha']));
+                    $total_ingresos = $row['total_ingresos'];
+                    $total_egresos = $row['total_egresos'];
+                ?>
                 <tr>
-                    <td><?= ucfirst($trans['tipo']) ?></td>
-                    <td><?= $trans['descripcion'] ?></td>
-                    <td><?= number_format($trans['monto'], 2) ?></td>
-                    <td><?= date('d/m/Y', strtotime($trans['fecha'])) ?></td>
+                    <td><?= $fecha_formateada ?></td>
+                    <td><?= number_format($total_ingresos, 2) ?></td>
+                    <td><?= number_format($total_egresos, 2) ?></td>
                 </tr>
-                <?php endforeach; ?>
+                <?php } ?>
+                <tr>
+                    <td><strong>Total</strong></td>
+                    <td><strong><?= number_format($total_ingresos, 2) ?></strong></td>
+                    <td><strong><?= number_format($total_egresos, 2) ?></strong></td>
+                </tr>
+                <tr>
+                    <td><strong>Diferencia</strong></td>
+                    <td colspan="2"><strong><?= number_format($diferencia, 2) ?></strong></td>
+                </tr>
             </tbody>
         </table>
     </div>
 
     <script>
         // Cambiar a selector de mes cuando es reporte mensual
-        document.querySelector('input[type="date"][data-month="true"]').type = 'month';
+        window.onload = function() {
+            var dateInput = document.querySelector('input[type="date"][data-month="true"]');
+            if (dateInput) {
+                dateInput.type = 'month';
+            }
+        };
     </script>
 </body>
 </html>
+<?php // Closing PHP tag to avoid accidental output ?>

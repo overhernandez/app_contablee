@@ -16,42 +16,58 @@ if ($_SESSION['role'] != 'admin') {
 $db = new Database();
 $conn = $db->connect();
 
-// Obtener listas necesarias
-$clientes = $conn->query("SELECT id_cliente, nombre FROM clientes")->fetchAll();
-$motivos = $conn->query("SELECT id_motivo_egreso, descripcion FROM motivos_egreso")->fetchAll();
-
-// Procesar nuevo egreso
+// Procesar nuevo egreso con manejo de errores
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    $id_cliente = $_POST['id_cliente'];
-    $id_motivo_egreso = $_POST['id_motivo_egreso'];
-    $descripcion = $_POST['descripcion'];
-    $monto = $_POST['monto'];
-    $fecha = $_POST['fecha'];
-    $beneficiario = $_POST['beneficiario'];
-
     try {
-        $stmt = $conn->prepare("INSERT INTO egresos (id_cliente, id_motivo_egreso, descripcion, monto, fecha_egreso, beneficiario) VALUES (?, ?, ?, ?, ?, ?)");
-        $stmt->execute([$id_cliente, $id_motivo_egreso, $descripcion, $monto, $fecha, $beneficiario]);
+        $id_cliente = $_POST['id_cliente'];
+        $monto = floatval($_POST['monto']);
+        $fecha_egreso = $_POST['fecha_egreso'];
+        $descripcion = htmlspecialchars($_POST['descripcion']);
+
+        // Validar datos
+        if(empty($id_cliente) || empty($monto) || empty($fecha_egreso)) {
+            throw new Exception("Todos los campos son requeridos");
+        }
+
+        $stmt = $conn->prepare("INSERT INTO egresos (id_cliente, monto, fecha_egreso, descripcion) VALUES (?, ?, ?, ?)");
+        if(!$stmt->execute([$id_cliente, $monto, $fecha_egreso, $descripcion])) {
+            throw new Exception("Error al registrar el egreso");
+        }
+        
+        $_SESSION['success'] = "Egreso registrado correctamente";
+        header("Location: egresos.php");
+        exit();
     } catch (PDOException $e) {
-        $_SESSION['error'] = "Error al registrar el egreso: " . $e->getMessage();
+        if ($e->getCode() == 23000 && strpos($e->getMessage(), "Duplicate entry") !== false) {
+            $_SESSION['error'] = "Error: Ya existe un egreso registrado para este cliente con la misma clave. Por favor, verifica la base de datos y elimina la restricción única sobre 'id_cliente' en la tabla 'egresos'.";
+        } else {
+            $_SESSION['error'] = $e->getMessage();
+        }
+    } catch (Exception $e) {
+        $_SESSION['error'] = $e->getMessage();
     }
 }
 
-// Obtener lista de egresos
+// Obtener lista de egresos con manejo de errores
 try {
     $stmt = $conn->query("
-        SELECT e.*, c.nombre as cliente, m.descripcion as motivo 
+        SELECT 
+            e.id_egreso,
+            c.nombre as cliente,
+            e.monto,
+            e.fecha_egreso,
+            e.descripcion
         FROM egresos e
-        LEFT JOIN clientes c ON e.id_cliente = c.id_cliente
-        LEFT JOIN motivos_egreso m ON e.id_motivo_egreso = m.id_motivo_egreso
+        JOIN clientes c ON e.id_cliente = c.id_cliente
         ORDER BY e.fecha_egreso DESC
     ");
     $egresos = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
-    // Si falla el JOIN, obtener solo los egresos
-    $stmt = $conn->query("SELECT * FROM egresos ORDER BY fecha_egreso DESC");
-    $egresos = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $egresos = [];
 }
+
+// Obtener lista de clientes
+$clientes = $conn->query("SELECT id_cliente, nombre FROM clientes")->fetchAll();
 ?>
 
 <!DOCTYPE html>
@@ -60,6 +76,23 @@ try {
     <meta charset="UTF-8">
     <title>Gestión de Egresos</title>
     <link rel="stylesheet" href="../css/styles.css">
+    <style>
+        .alert {
+            padding: 10px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+        }
+        .error {
+            background-color: #ffebee;
+            color: #c62828;
+            border: 1px solid #ef9a9a;
+        }
+        .success {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+            border: 1px solid #a5d6a7;
+        }
+    </style>
 </head>
 <body>
     <div class="container">
@@ -68,42 +101,38 @@ try {
         </div>
         <h1>Egresos</h1>
         
+        <?php if(isset($_SESSION['error'])): ?>
+            <div class="alert error"><?= $_SESSION['error'] ?></div>
+            <?php unset($_SESSION['error']); ?>
+        <?php endif; ?>
+        
+        <?php if(isset($_SESSION['success'])): ?>
+            <div class="alert success"><?= $_SESSION['success'] ?></div>
+            <?php unset($_SESSION['success']); ?>
+        <?php endif; ?>
+
         <div class="form-container">
             <h2>Registrar Nuevo Egreso</h2>
             <form method="POST" action="">
                 <div>
                     <label>Cliente:</label>
                     <select name="id_cliente" required>
-                        <option value="">Seleccione un cliente</option>
                         <?php foreach ($clientes as $cliente): ?>
                         <option value="<?= $cliente['id_cliente'] ?>"><?= $cliente['nombre'] ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
                 <div>
-                    <label>Motivo:</label>
-                    <select name="id_motivo_egreso" required>
-                        <option value="">Seleccione un motivo</option>
-                        <?php foreach ($motivos as $motivo): ?>
-                        <option value="<?= $motivo['id_motivo_egreso'] ?>"><?= $motivo['descripcion'] ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div>
-                    <label>Descripción:</label>
-                    <input type="text" name="descripcion" required>
-                </div>
-                <div>
                     <label>Monto:</label>
                     <input type="number" step="0.01" name="monto" required>
                 </div>
                 <div>
-                    <label>Beneficiario:</label>
-                    <input type="text" name="beneficiario" required>
+                    <label>Fecha Egreso:</label>
+                    <input type="date" name="fecha_egreso" required value="<?= date('Y-m-d') ?>">
                 </div>
                 <div>
-                    <label>Fecha:</label>
-                    <input type="date" name="fecha" required value="<?= date('Y-m-d') ?>">
+                    <label>Descripción:</label>
+                    <input type="text" name="descripcion" required>
                 </div>
                 <button type="submit">Registrar</button>
             </form>
@@ -114,23 +143,19 @@ try {
                 <tr>
                     <th>ID</th>
                     <th>Cliente</th>
-                    <th>Motivo</th>
-                    <th>Descripción</th>
                     <th>Monto</th>
-                    <th>Beneficiario</th>
-                    <th>Fecha</th>
+                    <th>Fecha Egreso</th>
+                    <th>Descripción</th>
                 </tr>
             </thead>
             <tbody>
                 <?php foreach ($egresos as $egreso): ?>
                 <tr>
                     <td><?= $egreso['id_egreso'] ?></td>
-                    <td><?= $egreso['cliente'] ?? 'N/A' ?></td>
-                    <td><?= $egreso['motivo'] ?? 'N/A' ?></td>
-                    <td><?= $egreso['descripcion'] ?></td>
+                    <td><?= $egreso['cliente'] ?></td>
                     <td><?= number_format($egreso['monto'], 2) ?></td>
-                    <td><?= $egreso['beneficiario'] ?></td>
                     <td><?= date('d/m/Y', strtotime($egreso['fecha_egreso'])) ?></td>
+                    <td><?= $egreso['descripcion'] ?></td>
                 </tr>
                 <?php endforeach; ?>
             </tbody>
@@ -138,3 +163,4 @@ try {
     </div>
 </body>
 </html>
+<?php // Cierre de PHP para evitar errores de fin de archivo ?>
