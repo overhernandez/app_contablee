@@ -159,10 +159,14 @@ $diferencia = $total_ingresos - $total_egresos;
         
         <form method="GET" action="">
             <div class="form-group">
-                <label>Tipo de Informe:</label>
+                <label>Cliente:</label>
                 <select name="informe_tipo" id="informe_tipo" onchange="this.form.submit(); toggleClienteSelector();">
-                    <option value="general" <?= $informe_tipo == 'general' ? 'selected' : '' ?>>Informe General</option>
-                    <option value="personal" <?= $informe_tipo == 'personal' ? 'selected' : '' ?>>Informe Personal</option>
+                    <option value="general" <?= $informe_tipo == 'general' ? 'selected' : '' ?>>Todos</option>
+                    <?php foreach ($clientes as $cliente): ?>
+                        <option value="<?= $cliente['id_cliente'] ?>" <?= $informe_tipo == $cliente['id_cliente'] ? 'selected' : '' ?>>
+                            <?= htmlspecialchars($cliente['nombre']) ?>
+                        </option>
+                    <?php endforeach; ?>
                 </select>
             </div>
             <div class="form-group" id="cliente_selector" style="display:none;">
